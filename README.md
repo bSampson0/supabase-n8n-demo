@@ -221,6 +221,7 @@ See the complete deployment guide: **[DEPLOYMENT.md](./DEPLOYMENT.md)**
 
 - **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Complete production deployment guide
 - **[SETUP_MONITORING.md](./SETUP_MONITORING.md)** - Configure GitHub/Netlify monitoring
+- **[N8N_RENDER_SETUP.md](./N8N_RENDER_SETUP.md)** - n8n workflow setup with Render backend
 - **[CLAUDE.md](./CLAUDE.md)** - Architecture documentation for AI assistants
 
 ## License
