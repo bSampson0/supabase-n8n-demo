@@ -1,0 +1,21 @@
+# Render.com Blueprint for Express Server
+# This deploys the Express backend that handles SSE streaming and webhooks
+
+services:
+  - type: web
+    name: devops-hub-server
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install --prefix server && npm run build --prefix server
+    startCommand: npm run start --prefix server
+    envVars:
+      - key: NODE_VERSION
+        value: 18
+      - key: PORT
+        value: 3001
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+    healthCheckPath: /api/health

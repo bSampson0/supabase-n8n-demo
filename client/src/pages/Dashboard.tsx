@@ -12,6 +12,15 @@ interface EventLogEntry {
   type: 'info' | 'success' | 'error'
 }
 
+function isMissingDeploymentsTable(message?: string) {
+  return Boolean(
+    message && (
+      message.includes("Could not find the table 'public.deployments' in the schema cache") ||
+      message.includes('relation "public.deployments" does not exist')
+    )
+  )
+}
+
 // ─── Seed data shown when the table is empty or not yet created ───────────────
 
 const SEED_DEPLOYMENTS: Deployment[] = [
@@ -24,12 +33,12 @@ const SEED_DEPLOYMENTS: Deployment[] = [
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function StatCard({ label, value, trend, trendColor }: {
+function StatCard({ label, value, trend, trendColor }: Readonly<{
   label: string
   value: string
   trend: string
   trendColor: 'green' | 'yellow' | 'red'
-}) {
+}>) {
   const colors = { green: 'text-green-400', yellow: 'text-yellow-400', red: 'text-red-400' }
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-5">
@@ -40,7 +49,7 @@ function StatCard({ label, value, trend, trendColor }: {
   )
 }
 
-function StatusBadge({ status }: { status: Deployment['status'] }) {
+function StatusBadge({ status }: Readonly<{ status: Deployment['status'] }>) {
   const styles: Record<string, string> = {
     success: 'bg-green-900/50 text-green-400 border border-green-800',
     failed:  'bg-red-900/50 text-red-400 border border-red-800',
@@ -77,8 +86,15 @@ export default function Dashboard() {
   const [environment, setEnvironment] = useState('staging')
   const [triggering, setTriggering] = useState(false)
   const [triggerMsg, setTriggerMsg] = useState<{ text: string; ok: boolean } | null>(null)
+  const [tableMissing, setTableMissing] = useState(false)
 
   const logRef = useRef<HTMLDivElement>(null)
+  let deployButtonText = 'Deploy → Trigger n8n'
+  if (tableMissing) {
+    deployButtonText = 'Create Table In Supabase First'
+  } else if (triggering) {
+    deployButtonText = 'Deploying...'
+  }
 
   function addLog(text: string, type: EventLogEntry['type'] = 'info') {
     const entry: EventLogEntry = {
@@ -99,9 +115,18 @@ export default function Dashboard() {
       .limit(20)
 
     if (error) {
+      if (isMissingDeploymentsTable(error.message)) {
+        setTableMissing(true)
+        setTriggerMsg({ text: 'Create the public.deployments table in Supabase before using live data.', ok: false })
+        addLog('Supabase table public.deployments is missing. Using seed data until schema is created.', 'error')
+        return
+      }
+
       addLog(`Using seed data (${error.message})`, 'info')
       return
     }
+
+    setTableMissing(false)
 
     if (data && data.length > 0) {
       setDeployments(data as Deployment[])
@@ -113,6 +138,10 @@ export default function Dashboard() {
   useEffect(() => {
     loadDeployments()
 
+    if (tableMissing) {
+      return
+    }
+
     const channel = supabase
       .channel('deployments-realtime')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'deployments' }, payload => {
@@ -123,11 +152,15 @@ export default function Dashboard() {
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
-  }, [])
+  }, [tableMissing])
 
   // ── SSE: listen for n8n callbacks from the backend ──
   useEffect(() => {
-    const es = new EventSource('/api/events/stream')
+    // Use environment variable for API URL in production, fallback to proxy in dev
+    const apiBaseUrl = import.meta.env.VITE_API_URL || ''
+    const eventSourceUrl = `${apiBaseUrl}/api/events/stream`
+
+    const es = new EventSource(eventSourceUrl)
 
     es.onopen = () => addLog('Connected to n8n event stream', 'success')
 
@@ -152,6 +185,12 @@ export default function Dashboard() {
 
   // ── Trigger a deployment (INSERT into Supabase) ──
   async function triggerDeployment() {
+    if (tableMissing) {
+      setTriggerMsg({ text: 'Run supabase/deployments.sql in the Supabase SQL Editor first.', ok: false })
+      addLog('Blocked INSERT because public.deployments has not been created yet.', 'error')
+      return
+    }
+
     setTriggering(true)
     setTriggerMsg(null)
 
@@ -169,8 +208,14 @@ export default function Dashboard() {
     const { error } = await supabase.from('deployments').insert([row])
 
     if (error) {
-      setTriggerMsg({ text: error.message, ok: false })
-      addLog(`Insert failed: ${error.message}`, 'error')
+      if (isMissingDeploymentsTable(error.message)) {
+        setTableMissing(true)
+        setTriggerMsg({ text: 'Supabase is missing public.deployments. Run supabase/deployments.sql in the SQL Editor.', ok: false })
+        addLog('Insert failed because public.deployments does not exist yet.', 'error')
+      } else {
+        setTriggerMsg({ text: error.message, ok: false })
+        addLog(`Insert failed: ${error.message}`, 'error')
+      }
     } else {
       setTriggerMsg({ text: 'Deployed! Supabase webhook → n8n triggered.', ok: true })
       addLog(`INSERT complete — n8n webhook should fire now`, 'success')
@@ -183,6 +228,17 @@ export default function Dashboard() {
   async function handleLogout() {
     await signOut()
     navigate('/auth')
+  }
+
+  function eventLogClassName(type: EventLogEntry['type']) {
+    switch (type) {
+      case 'success':
+        return 'text-green-400'
+      case 'error':
+        return 'text-red-400'
+      default:
+        return 'text-gray-500'
+    }
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -219,6 +275,15 @@ export default function Dashboard() {
           <StatCard label="Incidents"    value="3"     trend="→ Same as last week" trendColor="yellow" />
           <StatCard label="Pipelines"    value="18"    trend="↑ 2 added this month" trendColor="green" />
         </div>
+
+        {tableMissing && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-5 py-4 text-sm text-amber-100">
+            <p className="font-semibold text-amber-300">Supabase table setup is incomplete</p>
+            <p className="mt-1 text-amber-100/90">
+              Run <span className="font-mono text-amber-200">supabase/deployments.sql</span> in the Supabase SQL Editor, then refresh this page.
+            </p>
+          </div>
+        )}
 
         {/* Main Grid */}
         <div className="grid md:grid-cols-3 gap-6">
@@ -268,8 +333,8 @@ export default function Dashboard() {
 
             <div className="p-6 space-y-4 flex-1">
               <div>
-                <label className="block text-gray-400 text-xs mb-1.5 uppercase tracking-wider">Service</label>
-                <select value={service} onChange={e => setService(e.target.value)}
+                <label htmlFor="deployment-service" className="block text-gray-400 text-xs mb-1.5 uppercase tracking-wider">Service</label>
+                <select id="deployment-service" value={service} onChange={e => setService(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-gray-100
                              text-sm focus:outline-none focus:border-green-500">
                   <option>api-gateway</option>
@@ -281,15 +346,15 @@ export default function Dashboard() {
               </div>
 
               <div>
-                <label className="block text-gray-400 text-xs mb-1.5 uppercase tracking-wider">Version</label>
-                <input type="text" value={version} onChange={e => setVersion(e.target.value)}
+                <label htmlFor="deployment-version" className="block text-gray-400 text-xs mb-1.5 uppercase tracking-wider">Version</label>
+                <input id="deployment-version" type="text" value={version} onChange={e => setVersion(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-gray-100
                              text-sm focus:outline-none focus:border-green-500" />
               </div>
 
               <div>
-                <label className="block text-gray-400 text-xs mb-1.5 uppercase tracking-wider">Environment</label>
-                <select value={environment} onChange={e => setEnvironment(e.target.value)}
+                <label htmlFor="deployment-environment" className="block text-gray-400 text-xs mb-1.5 uppercase tracking-wider">Environment</label>
+                <select id="deployment-environment" value={environment} onChange={e => setEnvironment(e.target.value)}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2.5 text-gray-100
                              text-sm focus:outline-none focus:border-green-500">
                   <option>staging</option>
@@ -300,7 +365,7 @@ export default function Dashboard() {
 
               <button
                 onClick={triggerDeployment}
-                disabled={triggering}
+                disabled={triggering || tableMissing}
                 className="w-full bg-green-500 hover:bg-green-400 disabled:bg-green-800 disabled:cursor-not-allowed
                            text-gray-950 font-semibold py-2.5 rounded-lg text-sm transition-colors
                            flex items-center justify-center gap-2"
@@ -308,7 +373,7 @@ export default function Dashboard() {
                 {triggering && (
                   <div className="w-4 h-4 border-2 border-gray-950 border-t-transparent rounded-full animate-spin" />
                 )}
-                {triggering ? 'Deploying...' : 'Deploy → Trigger n8n'}
+                {deployButtonText}
               </button>
 
               {triggerMsg && (
@@ -347,17 +412,13 @@ export default function Dashboard() {
               Event Log
             </h2>
             <span className="text-xs text-green-400 flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 bg-green-400 rounded-full inline-block animate-pulse" />
+              <div className="h-1.5 w-1.5 rounded-full bg-green-400 animate-pulse" />
               Live
             </span>
           </div>
           <div ref={logRef} className="p-4 space-y-1.5 max-h-52 overflow-y-auto">
             {eventLog.map(entry => (
-              <div key={entry.id} className={`text-xs flex gap-3 ${
-                entry.type === 'success' ? 'text-green-400'
-                : entry.type === 'error'   ? 'text-red-400'
-                : 'text-gray-500'
-              }`}>
+              <div key={entry.id} className={`text-xs flex gap-3 ${eventLogClassName(entry.type)}`}>
                 <span className="text-gray-600 shrink-0">[{entry.timestamp}]</span>
                 <span>{entry.text}</span>
               </div>

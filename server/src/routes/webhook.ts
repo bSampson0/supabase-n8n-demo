@@ -33,11 +33,16 @@ router.get('/events/stream', (req: Request, res: Response) => {
 })
 
 // ── POST /api/webhook/n8n ─────────────────────────────────────────────────────
-// n8n sends a callback here after processing a deployment event.
+// n8n sends a callback here after processing GitHub/Netlify/deployment events.
 // The payload is broadcast to all connected dashboard clients via SSE.
 router.post('/webhook/n8n', (req: Request, res: Response) => {
   const payload = req.body
-  console.log('n8n webhook received:', JSON.stringify(payload, null, 2))
+
+  // Log event type for debugging
+  const eventType = payload.event_type || 'unknown'
+  const eventAction = payload.event_action || 'unknown'
+  console.log(`n8n webhook received: ${eventType} (${eventAction})`)
+  console.log('Payload:', JSON.stringify(payload, null, 2))
 
   const message = JSON.stringify({
     type: 'n8n_event',
@@ -47,12 +52,17 @@ router.post('/webhook/n8n', (req: Request, res: Response) => {
 
   let delivered = 0
   clients.forEach(client => {
-    client.write(`data: ${message}\n\n`)
-    delivered++
+    try {
+      client.write(`data: ${message}\n\n`)
+      delivered++
+    } catch (err) {
+      console.error('Failed to send to SSE client:', err)
+      clients.delete(client)
+    }
   })
 
   console.log(`Broadcast to ${delivered} SSE client(s)`)
-  res.json({ ok: true, delivered })
+  res.json({ ok: true, delivered, event_type: eventType })
 })
 
 export default router

@@ -1,0 +1,456 @@
+{
+  "name": "DevOps Hub - Repo & Deployment Monitor",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "github-webhook",
+        "options": {}
+      },
+      "id": "github-webhook-trigger",
+      "name": "GitHub Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "github-devops-hub"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "netlify-webhook",
+        "options": {}
+      },
+      "id": "netlify-webhook-trigger",
+      "name": "Netlify Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 600],
+      "webhookId": "netlify-devops-hub"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.headers['x-github-event'] }}",
+              "operation": "equals",
+              "value2": "push"
+            }
+          ]
+        }
+      },
+      "id": "is-github-push",
+      "name": "Is GitHub Push?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.headers['x-github-event'] }}",
+              "operation": "equals",
+              "value2": "pull_request"
+            }
+          ]
+        }
+      },
+      "id": "is-github-pr",
+      "name": "Is GitHub PR?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 320]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.headers['x-github-event'] }}",
+              "operation": "equals",
+              "value2": "issues"
+            }
+          ]
+        }
+      },
+      "id": "is-github-issue",
+      "name": "Is GitHub Issue?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nconst headers = $input.first().json.headers;\n\nreturn {\n  event_type: 'github_push',\n  event_source: 'github',\n  event_action: 'pushed',\n  repo_name: body.repository.full_name,\n  branch: body.ref.replace('refs/heads/', ''),\n  commit_sha: body.head_commit.id,\n  commit_message: body.head_commit.message,\n  author: body.pusher.name || body.pusher.email,\n  payload: body\n};"
+      },
+      "id": "transform-github-push",
+      "name": "Transform GitHub Push",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\nreturn {\n  event_type: 'github_pr',\n  event_source: 'github',\n  event_action: body.action,\n  repo_name: body.repository.full_name,\n  branch: body.pull_request.head.ref,\n  pr_number: body.pull_request.number,\n  pr_title: body.pull_request.title,\n  author: body.pull_request.user.login,\n  commit_sha: body.pull_request.head.sha,\n  payload: body\n};"
+      },
+      "id": "transform-github-pr",
+      "name": "Transform GitHub PR",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\nreturn {\n  event_type: 'github_issue',\n  event_source: 'github',\n  event_action: body.action,\n  repo_name: body.repository.full_name,\n  issue_number: body.issue.number,\n  issue_title: body.issue.title,\n  author: body.issue.user.login,\n  payload: body\n};"
+      },
+      "id": "transform-github-issue",
+      "name": "Transform GitHub Issue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\nconst eventData = {\n  event_type: 'netlify_deploy',\n  event_source: 'netlify',\n  event_action: body.state,\n  deploy_id: body.id,\n  deploy_url: body.deploy_ssl_url || body.url,\n  deploy_state: body.state,\n  site_name: body.name,\n  branch: body.branch,\n  commit_sha: body.commit_ref,\n  payload: body\n};\n\n// Map Netlify state to deployment status\nconst statusMap = {\n  'building': 'running',\n  'ready': 'success',\n  'error': 'failed',\n  'failed': 'failed'\n};\n\n// Also prepare deployment record if state is final\nif (body.state === 'ready' || body.state === 'error' || body.state === 'failed') {\n  eventData.deployment_record = {\n    service: body.name || 'netlify-app',\n    version: body.commit_ref ? body.commit_ref.substring(0, 7) : 'unknown',\n    environment: body.branch === 'main' ? 'production' : 'staging',\n    status: statusMap[body.state] || 'pending',\n    triggered_by: body.published_at ? 'netlify-auto' : 'netlify-manual',\n    deployed_at: new Date().toISOString()\n  };\n}\n\nreturn eventData;"
+      },
+      "id": "transform-netlify-deploy",
+      "name": "Transform Netlify Deploy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 600]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "event_log",
+        "columns": "event_type, event_source, event_action, repo_name, branch, commit_sha, commit_message, author, pr_number, pr_title, issue_number, issue_title, deploy_id, deploy_url, deploy_state, site_name, payload",
+        "options": {}
+      },
+      "id": "insert-event-log",
+      "name": "Insert to Event Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [850, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "SUPABASE_CREDENTIALS_ID",
+          "name": "Supabase Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ !!$json.deployment_record }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "has-deployment-record",
+      "name": "Has Deployment Record?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 600]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "table": "deployments",
+        "columns": "service, version, environment, status, triggered_by, deployed_at",
+        "options": {}
+      },
+      "id": "insert-deployment",
+      "name": "Insert to Deployments",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1050, 520],
+      "credentials": {
+        "supabaseApi": {
+          "id": "SUPABASE_CREDENTIALS_ID",
+          "name": "Supabase Service Role"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "=http://localhost:3001/api/webhook/n8n",
+        "options": {
+          "timeout": 5000
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "event_type",
+              "value": "={{ $json.event_type }}"
+            },
+            {
+              "name": "event_action",
+              "value": "={{ $json.event_action }}"
+            },
+            {
+              "name": "repo_name",
+              "value": "={{ $json.repo_name }}"
+            },
+            {
+              "name": "branch",
+              "value": "={{ $json.branch }}"
+            },
+            {
+              "name": "message",
+              "value": "={{ $json.commit_message || $json.pr_title || $json.issue_title || 'Deployment: ' + $json.deploy_state }}"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ new Date().toISOString() }}"
+            }
+          ]
+        }
+      },
+      "id": "notify-backend",
+      "name": "Notify Backend (SSE)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 300],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const event = $input.first().json;\n\nlet message = '';\nlet color = '#36a64f';\n\nif (event.event_type === 'github_push') {\n  message = `🚀 *Push to ${event.branch}*\\n${event.commit_message}\\nby ${event.author}`;\n  color = '#2ea44f';\n} else if (event.event_type === 'github_pr') {\n  const action = event.event_action;\n  const emoji = action === 'opened' ? '🔀' : action === 'closed' ? '✅' : '🔄';\n  message = `${emoji} *PR #${event.pr_number} ${action}*\\n${event.pr_title}\\nby ${event.author}`;\n  color = action === 'opened' ? '#6f42c1' : '#2ea44f';\n} else if (event.event_type === 'github_issue') {\n  const action = event.event_action;\n  const emoji = action === 'opened' ? '🐛' : action === 'closed' ? '✅' : '🔄';\n  message = `${emoji} *Issue #${event.issue_number} ${action}*\\n${event.issue_title}\\nby ${event.author}`;\n  color = action === 'opened' ? '#d73a4a' : '#2ea44f';\n} else if (event.event_type === 'netlify_deploy') {\n  const emoji = event.deploy_state === 'ready' ? '✅' : event.deploy_state === 'building' ? '⏳' : '❌';\n  message = `${emoji} *Netlify Deploy ${event.deploy_state}*\\n${event.site_name}\\nBranch: ${event.branch}`;\n  color = event.deploy_state === 'ready' ? '#2ea44f' : event.deploy_state === 'building' ? '#dbab09' : '#d73a4a';\n}\n\nreturn {\n  message,\n  color,\n  repo: event.repo_name,\n  deploy_url: event.deploy_url\n};"
+      },
+      "id": "format-notification",
+      "name": "Format Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1050, 160]
+    },
+    {
+      "parameters": {
+        "channel": "#devops-alerts",
+        "text": "={{ $json.message }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        },
+        "attachments": [
+          {
+            "color": "={{ $json.color }}",
+            "fields": {
+              "item": [
+                {
+                  "short": true,
+                  "title": "Repository",
+                  "value": "={{ $json.repo }}"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "id": "send-slack-notification",
+      "name": "Send Slack Notification",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.1,
+      "position": [1250, 100],
+      "credentials": {
+        "slackApi": {
+          "id": "SLACK_CREDENTIALS_ID",
+          "name": "Slack API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "content": "={{ $json.message }}",
+        "options": {
+          "username": "DevOps Hub",
+          "avatarUrl": "https://raw.githubusercontent.com/n8n-io/n8n/master/assets/n8n-logo.png"
+        }
+      },
+      "id": "send-discord-notification",
+      "name": "Send Discord Notification",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [1250, 220],
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "DISCORD_CREDENTIALS_ID",
+          "name": "Discord Webhook"
+        }
+      },
+      "continueOnFail": true
+    }
+  ],
+  "connections": {
+    "GitHub Webhook": {
+      "main": [
+        [
+          {
+            "node": "Is GitHub Push?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is GitHub PR?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Is GitHub Issue?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Netlify Webhook": {
+      "main": [
+        [
+          {
+            "node": "Transform Netlify Deploy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is GitHub Push?": {
+      "main": [
+        [
+          {
+            "node": "Transform GitHub Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is GitHub PR?": {
+      "main": [
+        [
+          {
+            "node": "Transform GitHub PR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is GitHub Issue?": {
+      "main": [
+        [
+          {
+            "node": "Transform GitHub Issue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform GitHub Push": {
+      "main": [
+        [
+          {
+            "node": "Insert to Event Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform GitHub PR": {
+      "main": [
+        [
+          {
+            "node": "Insert to Event Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform GitHub Issue": {
+      "main": [
+        [
+          {
+            "node": "Insert to Event Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Netlify Deploy": {
+      "main": [
+        [
+          {
+            "node": "Insert to Event Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Has Deployment Record?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert to Event Log": {
+      "main": [
+        [
+          {
+            "node": "Notify Backend (SSE)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Format Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Deployment Record?": {
+      "main": [
+        [
+          {
+            "node": "Insert to Deployments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Notification": {
+      "main": [
+        [
+          {
+            "node": "Send Slack Notification",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Discord Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 2,
+  "updatedAt": "2026-04-10T00:00:00.000Z",
+  "versionId": "1"
+}

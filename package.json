@@ -3,7 +3,12 @@
   "private": true,
   "scripts": {
     "dev": "concurrently \"npm run dev --prefix client\" \"npm run dev --prefix server\" --names client,server --prefix-colors green,blue",
-    "install:all": "npm install --prefix client && npm install --prefix server && npm install"
+    "install:all": "npm install --prefix client && npm install --prefix server && npm install",
+    "supabase:init": "npx supabase@latest init",
+    "supabase:login": "npx supabase@latest login",
+    "supabase:link": "npx supabase@latest link",
+    "db:push": "npx supabase@latest db push",
+    "db:new": "npx supabase@latest migration new"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
